@@ -1,1 +1,548 @@
 
+name: Build Jarvis APK
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: 8.5
+
+      - name: Generate Jarvis Project Files
+        run: |
+          cat << 'EOF' > setup.py
+          import os
+
+          files = {
+              "settings.gradle.kts": """
+          pluginManagement {
+              repositories {
+                  google()
+                  mavenCentral()
+                  gradlePluginPortal()
+              }
+          }
+          dependencyResolutionManagement {
+              repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
+              repositories {
+                  google()
+                  mavenCentral()
+              }
+          }
+          rootProject.name = "JarvisShain"
+          include(":app")
+          """,
+
+              "build.gradle.kts": """
+          plugins {
+              id("com.android.application") version "8.5.2" apply false
+              id("org.jetbrains.kotlin.android") version "2.0.20" apply false
+              id("org.jetbrains.kotlin.plugin.compose") version "2.0.20" apply false
+              id("org.jetbrains.kotlin.plugin.serialization") version "2.0.20" apply false
+          }
+          """,
+
+              "gradle.properties": """
+          org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+          android.useAndroidX=true
+          android.nonTransitiveRClass=true
+          kotlin.code.style=official
+          """,
+
+              "app/build.gradle.kts": """
+          plugins {
+              id("com.android.application")
+              id("org.jetbrains.kotlin.android")
+              id("org.jetbrains.kotlin.plugin.compose")
+              id("org.jetbrains.kotlin.plugin.serialization")
+          }
+
+          android {
+              namespace = "com.jarvis.shain"
+              compileSdk = 35
+
+              defaultConfig {
+                  applicationId = "com.jarvis.shain"
+                  minSdk = 26
+                  targetSdk = 35
+                  versionCode = 1
+                  versionName = "2.0.0"
+              }
+
+              buildTypes {
+                  release {
+                      isMinifyEnabled = false
+                  }
+              }
+              compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }
+              kotlinOptions {
+                  jvmTarget = "17"
+              }
+              buildFeatures {
+                  compose = true
+              }
+          }
+
+          dependencies {
+              val composeBom = platform("androidx.compose:compose-bom:2024.09.00")
+              implementation(composeBom)
+              implementation("androidx.compose.ui:ui")
+              implementation("androidx.compose.ui:ui-graphics")
+              implementation("androidx.compose.material3:material3")
+              implementation("androidx.compose.material:material-icons-extended")
+              implementation("androidx.core:core-ktx:1.13.1")
+              implementation("androidx.activity:activity-compose:1.9.2")
+              implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.5")
+              implementation("com.google.ai.client.generativeai:generativeai:0.9.0")
+              implementation("androidx.security:security-crypto:1.1.0-alpha06")
+              implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.1")
+              implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+          }
+          """,
+
+              "app/src/main/AndroidManifest.xml": """<?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              xmlns:tools="http://schemas.android.com/tools">
+              <uses-permission android:name="android.permission.RECORD_AUDIO" />
+              <uses-permission android:name="android.permission.INTERNET" />
+              <uses-permission android:name="android.permission.CALL_PHONE" />
+              <uses-permission android:name="android.permission.CAMERA" />
+              <uses-permission android:name="com.android.alarm.permission.SET_ALARM" />
+              <uses-permission android:name="android.permission.QUERY_ALL_PACKAGES" tools:ignore="QueryAllPackagesCondition" />
+
+              <application
+                  android:name=".JarvisApp"
+                  android:label="JARVIS"
+                  android:supportsRtl="true"
+                  android:theme="@style/Theme.Jarvis">
+                  <activity
+                      android:name=".ui.MainActivity"
+                      android:exported="true">
+                      <intent-filter>
+                          <action android:name="android.intent.action.MAIN" />
+                          <category android:name="android.intent.category.LAUNCHER" />
+                      </intent-filter>
+                  </activity>
+              </application>
+          </manifest>
+          """,
+
+              "app/src/main/res/values/themes.xml": """<resources>
+              <style name="Theme.Jarvis" parent="android:Theme.Material.NoActionBar">
+                  <item name="android:statusBarColor">#030712</item>
+                  <item name="android:navigationBarColor">#030712</item>
+              </style>
+          </resources>
+          """,
+
+              "app/src/main/java/com/jarvis/shain/JarvisApp.kt": """package com.jarvis.shain
+          import android.app.Application
+          class JarvisApp : Application()
+          """,
+
+              "app/src/main/java/com/jarvis/shain/data/Models.kt": """package com.jarvis.shain.data
+          import kotlinx.serialization.Serializable
+
+          @Serializable
+          data class JarvisIntentResponse(
+              val spokenResponse: String,
+              val requiresConfirmation: Boolean = false,
+              val confirmationPrompt: String? = null,
+              val action: DeviceAction? = null
+          )
+
+          @Serializable
+          data class DeviceAction(
+              val type: ActionType,
+              val parameters: Map<String, String> = emptyMap()
+          )
+
+          @Serializable
+          enum class ActionType {
+              OPEN_APP, MAKE_CALL, TORCH_TOGGLE, SET_ALARM, READ_BATTERY, NONE
+          }
+
+          enum class JarvisState {
+              IDLE, LISTENING, THINKING, SPEAKING, AWAITING_CONFIRMATION
+          }
+
+          data class ChatMessage(val isOwner: Boolean, val text: String)
+          """,
+
+              "app/src/main/java/com/jarvis/shain/data/SecureStorage.kt": """package com.jarvis.shain.data
+          import android.content.Context
+          import androidx.security.crypto.EncryptedSharedPreferences
+          import androidx.security.crypto.MasterKey
+
+          class SecureStorage(context: Context) {
+              private val masterKey = MasterKey.Builder(context).setKeyScheme(MasterKey.KeyScheme.AES256_GCM).build()
+              private val prefs = EncryptedSharedPreferences.create(
+                  context, "vault", masterKey,
+                  EncryptedSharedPreferences.PrefKeyEncryptionScheme.AES256_SIV,
+                  EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
+              )
+              fun saveApiKey(key: String) = prefs.edit().putString("key", key.trim()).apply()
+              fun getApiKey(): String? = prefs.getString("key", null)
+          }
+          """,
+
+              "app/src/main/java/com/jarvis/shain/voice/SpeechEngine.kt": """package com.jarvis.shain.voice
+          import android.content.Context
+          import android.content.Intent
+          import android.os.Bundle
+          import android.speech.RecognitionListener
+          import android.speech.RecognizerIntent
+          import android.speech.SpeechRecognizer
+
+          class SpeechEngine(private val context: Context) {
+              private var recognizer: SpeechRecognizer? = null
+              var onResult: ((String) -> Unit)? = null
+              var onError: (() -> Unit)? = null
+
+              fun initialize() {
+                  if (SpeechRecognizer.isRecognitionAvailable(context)) {
+                      recognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                          setRecognitionListener(object : RecognitionListener {
+                              override fun onReadyForSpeech(p: Bundle?) {}
+                              override fun onBeginningOfSpeech() {}
+                              override fun onRmsChanged(r: Float) {}
+                              override fun onBufferReceived(b: ByteArray?) {}
+                              override fun onEndOfSpeech() {}
+                              override fun onError(e: Int) { onError?.invoke() }
+                              override fun onResults(res: Bundle?) {
+                                  val text = res?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()
+                                  if (!text.isNullOrBlank()) onResult?.invoke(text)
+                              }
+                              override fun onPartialResults(p: Bundle?) {}
+                              override fun onEvent(p: Int, b: Bundle?) {}
+                          })
+                      }
+                  }
+              }
+
+              fun startListening() {
+                  val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+                      putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+                      putExtra(RecognizerIntent.EXTRA_LANGUAGE, "hi-IN")
+                      putExtra("android.speech.extra.EXTRA_ADDITIONAL_LANGUAGES", arrayOf("en-IN", "en-US"))
+                  }
+                  recognizer?.startListening(intent)
+              }
+              fun stopListening() = recognizer?.stopListening()
+              fun destroy() = recognizer?.destroy()
+          }
+          """,
+
+              "app/src/main/java/com/jarvis/shain/voice/VoiceSpeaker.kt": """package com.jarvis.shain.voice
+          import android.content.Context
+          import android.speech.tts.TextToSpeech
+          import java.util.Locale
+
+          class VoiceSpeaker(context: Context) : TextToSpeech.OnInitListener {
+              private var tts: TextToSpeech? = TextToSpeech(context, this)
+              var onDone: (() -> Unit)? = null
+              override fun onInit(s: Int) {
+                  if (s == TextToSpeech.SUCCESS) {
+                      tts?.setSpeechRate(1.1f)
+                  }
+              }
+              fun speak(text: String) {
+                  val isHindi = text.any { it in '\\u0900'..'\\u097F' }
+                  tts?.language = if (isHindi) Locale("hi", "IN") else Locale("en", "IN")
+                  tts?.speak(text, TextToSpeech.QUEUE_FLUSH, null, "JARVIS")
+              }
+              fun stop() = tts?.stop()
+              fun destroy() = tts?.shutdown()
+          }
+          """,
+
+              "app/src/main/java/com/jarvis/shain/action/DeviceController.kt": """package com.jarvis.shain.action
+          import android.content.Context
+          import android.content.Intent
+          import android.content.pm.PackageManager
+          import android.hardware.camera2.CameraManager
+          import android.net.Uri
+          import android.os.BatteryManager
+          import android.provider.AlarmClock
+          import com.jarvis.shain.data.DeviceAction
+
+          class DeviceController(private val context: Context) {
+              fun execute(action: DeviceAction): String {
+                  return when (action.type) {
+                      com.jarvis.shain.data.ActionType.OPEN_APP -> {
+                          val name = action.parameters["appName"] ?: return ""
+                          val pm = context.packageManager
+                          for (app in pm.getInstalledApplications(PackageManager.GET_META_DATA)) {
+                              if (pm.getApplicationLabel(app).toString().contains(name, ignoreCase = true)) {
+                                  pm.getLaunchIntentForPackage(app.packageName)?.let {
+                                      it.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                      context.startActivity(it)
+                                      return "$name खोल दिया, सर."
+                                  }
+                              }
+                          }
+                          "App nahi mila, Sir."
+                      }
+                      com.jarvis.shain.data.ActionType.TORCH_TOGGLE -> {
+                          val cm = context.getSystemService(Context.CAMERA_SERVICE) as CameraManager
+                          cm.setTorchMode(cm.cameraIdList[0], action.parameters["enabled"]?.toBoolean() ?: true)
+                          "Flashlight toggled, Sir."
+                      }
+                      com.jarvis.shain.data.ActionType.MAKE_CALL -> {
+                          val num = action.parameters["phoneNumber"] ?: ""
+                          val intent = Intent(Intent.ACTION_DIAL, Uri.parse("tel:$num")).apply {
+                              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                          }
+                          context.startActivity(intent)
+                          "Calling $num, Sir."
+                      }
+                      com.jarvis.shain.data.ActionType.SET_ALARM -> {
+                          val h = action.parameters["hour"]?.toIntOrNull() ?: 7
+                          val m = action.parameters["minute"]?.toIntOrNull() ?: 0
+                          val intent = Intent(AlarmClock.ACTION_SET_ALARM).apply {
+                              putExtra(AlarmClock.EXTRA_HOUR, h)
+                              putExtra(AlarmClock.EXTRA_MINUTES, m)
+                              putExtra(AlarmClock.EXTRA_SKIP_UI, true)
+                              addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                          }
+                          context.startActivity(intent)
+                          "Alarm set for $h:$m, Sir."
+                      }
+                      com.jarvis.shain.data.ActionType.READ_BATTERY -> {
+                          val bm = context.getSystemService(Context.BATTERY_SERVICE) as BatteryManager
+                          val l = bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
+                          "Sir, battery $l percent hai."
+                      }
+                      else -> "Done, Sir."
+                  }
+              }
+          }
+          """,
+
+              "app/src/main/java/com/jarvis/shain/ai/GeminiBrain.kt": """package com.jarvis.shain.ai
+          import com.google.ai.client.generativeai.GenerativeModel
+          import com.google.ai.client.generativeai.type.content
+          import com.jarvis.shain.data.JarvisIntentResponse
+          import kotlinx.coroutines.Dispatchers
+          import kotlinx.coroutines.withContext
+          import kotlinx.serialization.json.Json
+
+          class GeminiBrain(apiKey: String) {
+              private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+              private val model = GenerativeModel(
+                  modelName = "gemini-1.5-flash",
+                  apiKey = apiKey,
+                  systemInstruction = content {
+                      text("You are JARVIS. Primary Owner: Shain. Understand Hindi and English. Format strictly in JSON: {\"spokenResponse\": \"text\", \"requiresConfirmation\": false, \"action\": {\"type\": \"OPEN_APP|MAKE_CALL|TORCH_TOGGLE|SET_ALARM|READ_BATTERY|NONE\", \"parameters\": {\"appName\": \"\", \"phoneNumber\": \"\", \"enabled\": \"true\", \"hour\": \"7\", \"minute\": \"0\"}}}")
+                  }
+              )
+              suspend fun think(prompt: String): Result<JarvisIntentResponse> = withContext(Dispatchers.IO) {
+                  try {
+                      val res = model.generateContent(prompt).text ?: ""
+                      val clean = res.removePrefix("```json").removePrefix("```").removeSuffix("```").trim()
+                      Result.success(json.decodeFromString<JarvisIntentResponse>(clean))
+                  } catch (e: Exception) {
+                      Result.failure(e)
+                  }
+              }
+          }
+          """,
+
+              "app/src/main/java/com/jarvis/shain/ui/JarvisViewModel.kt": """package com.jarvis.shain.ui
+          import android.app.Application
+          import androidx.lifecycle.AndroidViewModel
+          import androidx.lifecycle.viewModelScope
+          import com.jarvis.shain.action.DeviceController
+          import com.jarvis.shain.ai.GeminiBrain
+          import com.jarvis.shain.data.*
+          import com.jarvis.shain.voice.SpeechEngine
+          import com.jarvis.shain.voice.VoiceSpeaker
+          import kotlinx.coroutines.flow.MutableStateFlow
+          import kotlinx.coroutines.flow.asStateFlow
+          import kotlinx.coroutines.launch
+
+          class JarvisViewModel(app: Application) : AndroidViewModel(app) {
+              val storage = SecureStorage(app)
+              val controller = DeviceController(app)
+              val speech = SpeechEngine(app)
+              val speaker = VoiceSpeaker(app)
+              var brain: GeminiBrain? = null
+
+              val state = MutableStateFlow(JarvisState.IDLE)
+              val messages = MutableStateFlow<List<ChatMessage>>(emptyList())
+
+              init {
+                  speech.initialize()
+                  rebuild()
+                  speech.onResult = { process(it) }
+                  speech.onError = { state.value = JarvisState.IDLE }
+              }
+
+              fun rebuild() {
+                  storage.getApiKey()?.let { brain = GeminiBrain(it) }
+              }
+
+              fun toggle() {
+                  if (state.value == JarvisState.LISTENING) {
+                      speech.stopListening()
+                      state.value = JarvisState.IDLE
+                  } else {
+                      speaker.stop()
+                      state.value = JarvisState.LISTENING
+                      speech.startListening()
+                  }
+              }
+
+              fun process(cmd: String) {
+                  messages.value = messages.value + ChatMessage(true, cmd)
+                  val low = cmd.lowercase()
+                  if (low.contains("torch on") || low.contains("लाइट जलाओ")) {
+                      controller.execute(DeviceAction(ActionType.TORCH_TOGGLE, mapOf("enabled" to "true")))
+                      reply("Flashlight चालू कर दी, सर.")
+                      return
+                  }
+                  if (low.contains("torch off") || low.contains("लाइट बंद")) {
+                      controller.execute(DeviceAction(ActionType.TORCH_TOGGLE, mapOf("enabled" to "false")))
+                      reply("Flashlight बंद कर दी, सर.")
+                      return
+                  }
+                  if (low.contains("battery") || low.contains("बैटरी")) {
+                      reply(controller.execute(DeviceAction(ActionType.READ_BATTERY)))
+                      return
+                  }
+                  state.value = JarvisState.THINKING
+                  viewModelScope.launch {
+                      brain?.think(cmd)?.onSuccess {
+                          reply(it.spokenResponse)
+                          it.action?.let { a -> controller.execute(a) }
+                      } ?: reply("API Key save karein, Sir.")
+                  }
+              }
+
+              fun reply(msg: String) {
+                  messages.value = messages.value + ChatMessage(false, msg)
+                  state.value = JarvisState.SPEAKING
+                  speaker.speak(msg)
+              }
+          }
+          """,
+
+              "app/src/main/java/com/jarvis/shain/ui/MainActivity.kt": """package com.jarvis.shain.ui
+          import android.Manifest
+          import android.os.Bundle
+          import androidx.activity.ComponentActivity
+          import androidx.activity.compose.rememberLauncherForActivityResult
+          import androidx.activity.compose.setContent
+          import androidx.activity.result.contract.ActivityResultContracts
+          import androidx.activity.viewModels
+          import androidx.compose.foundation.Canvas
+          import androidx.compose.foundation.background
+          import androidx.compose.foundation.clickable
+          import androidx.compose.foundation.layout.*
+          import androidx.compose.foundation.lazy.LazyColumn
+          import androidx.compose.foundation.lazy.items
+          import androidx.compose.foundation.shape.RoundedCornerShape
+          import androidx.compose.material.icons.Icons
+          import androidx.compose.material.icons.filled.Settings
+          import androidx.compose.material3.*
+          import androidx.compose.runtime.*
+          import androidx.compose.ui.Alignment
+          import androidx.compose.ui.Modifier
+          import androidx.compose.ui.graphics.Color
+          import androidx.compose.ui.unit.dp
+          import androidx.compose.ui.unit.sp
+          import com.jarvis.shain.data.JarvisState
+
+          class MainActivity : ComponentActivity() {
+              private val vm: JarvisViewModel by viewModels()
+
+              override fun onCreate(savedInstanceState: Bundle?) {
+                  super.onCreate(savedInstanceState)
+                  setContent {
+                      var showDialog by remember { mutableStateOf(false) }
+                      val state by vm.state.collectAsState()
+                      val msgs by vm.messages.collectAsState()
+                      val req = rememberLauncherForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {}
+
+                      LaunchedEffect(Unit) {
+                          req.launch(arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CALL_PHONE, Manifest.permission.CAMERA))
+                      }
+
+                      Scaffold(
+                          containerColor = Color(0xFF030712),
+                          topBar = {
+                              Row(Modifier.fillMaxWidth().padding(16.dp), horizontalArrangement = Arrangement.SpaceBetween) {
+                                  Text("JARVIS // SHAIN", color = Color(0xFF00F0FF), letterSpacing = 2.sp)
+                                  IconButton(onClick = { showDialog = true }) {
+                                      Icon(Icons.Default.Settings, contentDescription = null, tint = Color.White)
+                                  }
+                              }
+                          }
+                      ) { padding ->
+                          Column(Modifier.fillMaxSize().padding(padding), horizontalAlignment = Alignment.CenterHorizontally) {
+                              LazyColumn(Modifier.weight(1f).fillMaxWidth().padding(12.dp), reverseLayout = true) {
+                                  items(msgs.reversed()) { msg ->
+                                      Box(Modifier.fillMaxWidth().padding(4.dp), contentAlignment = if (msg.isOwner) Alignment.CenterEnd else Alignment.CenterStart) {
+                                          Text(msg.text, color = Color.White, modifier = Modifier.background(if (msg.isOwner) Color(0xFF0F172A) else Color(0xFF1E293B), RoundedCornerShape(8.dp)).padding(10.dp))
+                                      }
+                                  }
+                              }
+                              Text(if (state == JarvisState.LISTENING) "Listening Shain Sir..." else "Tap Arc Reactor", color = Color.Gray, modifier = Modifier.padding(bottom = 8.dp))
+                              Box(Modifier.size(140.dp).clickable { vm.toggle() }, contentAlignment = Alignment.Center) {
+                                  Canvas(Modifier.size(120.dp)) {
+                                      drawCircle(if (state == JarvisState.LISTENING) Color(0xFF00F0FF) else Color(0xFF006677))
+                                  }
+                              }
+                              Spacer(Modifier.height(24.dp))
+                          }
+                      }
+
+                      if (showDialog) {
+                          var key by remember { mutableStateOf(vm.storage.getApiKey() ?: "") }
+                          AlertDialog(
+                              onDismissRequest = { showDialog = false },
+                              title = { Text("Gemini API Key") },
+                              text = { OutlinedTextField(value = key, onValueChange = { key = it }, singleLine = true) },
+                              confirmButton = {
+                                  Button(onClick = { vm.storage.saveApiKey(key); vm.rebuild(); showDialog = false }) { Text("Save") }
+                              }
+                          )
+                      }
+                  }
+              }
+          }
+          """
+          }
+
+          for path, content in files.items():
+              os.makedirs(os.path.dirname(path), exist_ok=True)
+              with open(path, "w", encoding="utf-8") as f:
+                  f.write(content.strip() + "\n")
+          print("All files created successfully.")
+          EOF
+          python3 setup.py
+
+      - name: Build APK with Gradle
+        run: gradle assembleDebug --stacktrace
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-Debug-APK
+          path: app/build/outputs/apk/debug/*.apk
